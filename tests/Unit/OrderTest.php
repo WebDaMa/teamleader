@@ -3,7 +3,10 @@
 namespace Tests\Unit;
 
 use App\Customer;
+use App\Disounts\DiscountOnCategoryCheapestItemDiscount;
+use App\Disounts\TotalDiscountOnTotalBoughtCustomerDiscount;
 use App\Item;
+use App\Logic\Math;
 use App\Order;
 use App\Product;
 use Tests\TestCase;
@@ -12,117 +15,122 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 class OrderTest extends TestCase {
 
     /**
-     * Test Case 1 Discount rule:
+     * Test Case Discount rule:
      *
      * 10% when customer already bought 1000 euros.
      *
      * @return void
      */
-    public function testCalculateDiscountCustomer1000()
+    public function testTotalDiscountOnTotalBoughtCustomerDiscount()
     {
-        //Overide Customer, so we can test multiple orders
-        $customer = factory(Customer::class)
-            ->create();
+        $totalOrdered = 500;
+        $totalOrder = 350;
+        $percentDiscount = 10;
 
-        //Make 10 orders for the same customer
-        $order = null;
-        $i = 0;
-        $orders = factory(Order::class, 10)
-            ->create([
-                'customer_id' => $customer->id
-            ])
-            ->each(function ($o)
-            {
-                /**
-                 * @var $o Order
-                 */
-                $items = factory(Item::class, rand(1, 3))->create([
-                    'order_id' => $o->id,
-                ])->each(function ($item) use (&$o, &$i)
-                {
-                    $o->subtotal += $item->subtotal;
-                });
-                $o->total = $o->subtotal;
-                $o->save();
+        $discount10PercentCustomer1000 = new TotalDiscountOnTotalBoughtCustomerDiscount(
+            "Customer already bought over 1000 Euro and gets 10% on subtotal.",
+            $totalOrdered, 1000, $percentDiscount, $totalOrder);
 
-                $o->calculateDiscountCustomer1000();
-                $o->calculateDiscountPercentage();
+        //Check results
+        $this->assertEquals(false, $discount10PercentCustomer1000->validate());
 
-                $totalOrdered = Order::where('customer_id', $o->customer_id)
-                    //Don't include current order
-                    ->where('order_id', '!=', $o->order_id)
-                    ->sum('total');
+        //Test positive
 
-                if ($totalOrdered > 1000)
-                {
-                    // If Customer has already bought more than 1000 give 10% discount
-                    $this->assertEquals($o->total, $o->round2Decimals(
-                        $o->subtotal -
-                        $o->round2Decimals($o->subtotal / 100 * 10)
-                    ));
-                } else
-                {
-                    $this->assertEquals($o->total, $o->subtotal);
-                }
-            });
+        $totalOrdered = 1000;
+
+        $discount10PercentCustomer1000 = new TotalDiscountOnTotalBoughtCustomerDiscount(
+            "Customer already bought over 1000 Euro and gets 10% on subtotal.",
+            $totalOrdered, 1000, $percentDiscount, $totalOrder);
+
+        //Check results
+        if($discount10PercentCustomer1000->validate()) {
+            $this->assertEquals(Math::round2Decimals($totalOrder / 100 * $percentDiscount), $discount10PercentCustomer1000->calculate() );
+        }
 
     }
 
     /**
-     * Test Case 3 Discount rule:
+     * Test Case Discount rule:
      *
      * If you buy two or more products of category "Tools" (id 1),
      * you get a 20% discount on the cheapest product.
      *
      * @return void
      */
-    public function testCalculateDiscountCat1()
+    public function testDiscountOnCategoryCheapestItemDiscount()
     {
-        /**
-         * @var $order Order
-         */
-        $order = factory(Order::class)->create();
+        $percentDiscount = 20;
 
-        $products = factory(Product::class, 3)->create(
+        $products = factory(Product::class, 3)->make(
             [
                 'category' => 1
             ]
         );
 
+        $cheapestProduct = $products->sortBy('price')->first();
+
+        $items = $this->makeItemsFromProducts($products, 3);
+
+        $discount20PercentCat1OnCheapestItem = new DiscountOnCategoryCheapestItemDiscount(
+            'Buy 2 or more items from category 1 and get 20% on the cheapest item.',
+            20, 1, 2, $items, $cheapestProduct);
+
+        $cheapestItem = $items->sortBy('unit_price')->first();
+
+        if($discount20PercentCat1OnCheapestItem->validate()) {
+            $this->assertEquals(Math::round2Decimals($cheapestItem->unit_price / 100 * $percentDiscount), $discount20PercentCat1OnCheapestItem->calculate() );
+        }
+
+        //Test a false case, wrong count Items
+
+        $items = $this->makeItemsFromProducts($products, 1, 1);
+
+        $discount20PercentCat1OnCheapestItem = new DiscountOnCategoryCheapestItemDiscount(
+            'Buy 2 or more items from category 1 and get 20% on the cheapest item.',
+            20, 1, 2, $items, $cheapestProduct);
+
+
+        $this->assertEquals(false, $discount20PercentCat1OnCheapestItem->validate());
+
+        //Test a false case, wrong category
+        $products = factory(Product::class, 3)->make(
+            [
+                'category' => 3
+            ]
+        );
+
+        $cheapestProduct = $products->sortBy('price')->first();
+
+        $items = $this->makeItemsFromProducts($products, 3);
+
+        $discount20PercentCat1OnCheapestItem = new DiscountOnCategoryCheapestItemDiscount(
+            'Buy 2 or more items from category 1 and get 20% on the cheapest item.',
+            20, 1, 2, $items, $cheapestProduct);
+
+
+        $this->assertEquals(false, $discount20PercentCat1OnCheapestItem->validate());
+
+
+    }
+
+    private function makeItemsFromProducts($products, $countItems, $quantity = 0) {
+        if($quantity === 0) {
+            $quantity = rand(1, 10);
+        }
         $i = 0;
-        $items = factory(Item::class, 3)->create([
-            'order_id' => $order->id,
-        ])->each(function ($item) use (&$order, &$i, $products)
+
+        return $items = factory(Item::class, $countItems)->make([
+            'order_id' => 1,
+            'product_id' => 1,
+            'quantity' => $quantity
+        ])->each(function ($item) use (&$i, $products)
         {
             $item->product_id = $products->values()->get($i)->product_id;
-            $item->save();
-            $order->subtotal += $item->subtotal;
+            $item->unit_price = $products->values()->get($i)->price;
+            $item->total = $products->values()->get($i)->price * $item->quantity;
+            $item->subtotal = $products->values()->get($i)->price * $item->quantity;
             $i++;
         });
-        $order->total = $order->subtotal;
-        $order->save();
-
-        $order->calculateDiscountCat1();
-        $order->calculateDiscountItems();
-
-        $cat1ItemsCount = $items->sum('quantity');
-
-        if ($cat1ItemsCount >= 2)
-        {
-            /**
-             * @var $cheapestCat1Item Item
-             */
-            $cheapestCat1Item = $items->sortBy('unit_price')->first();
-
-            //var_dump('t');
-            //Test if subtotal order minus discount cheapest item is equal to total order
-            $this->assertEquals($order->total, $order->round2Decimals(
-                $order->subtotal - ($cheapestCat1Item->unit_price / 100 * 20))
-            );
-        } else
-        {
-            $this->assertEquals($order->total, $order->subtotal);
-        }
     }
 
 }
